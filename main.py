@@ -1,95 +1,119 @@
 # main.py
 import os
 import time
-import cv2
-import sounddevice as sd
 import numpy as np
-import speech_recognition as sr
-from dotenv import load_dotenv
+import sounddevice as sd
+import cv2
 from openai import OpenAI
-from camera_view import CameraView
+from dotenv import load_dotenv
 from audio_stream import AudioStream
+from camera_view import CameraView
 
+# Load .env file (API key)
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_default_camera_index():
-    index = 0
-    while True:
-        cap = cv2.VideoCapture(index)
+    """Find the first available USB camera."""
+    for i in range(10):
+        cap = cv2.VideoCapture(i)
         if cap.isOpened():
             cap.release()
-            return index
-        index += 1
-        if index > 10:
-            raise RuntimeError("No camera detected!")
+            return i
+    raise RuntimeError("No camera detected!")
 
 def get_default_mic_device():
+    """Find first available microphone."""
     devices = sd.query_devices()
     for i, d in enumerate(devices):
-        if d['max_input_channels'] > 0:
+        if d["max_input_channels"] > 0:
             return i
     raise RuntimeError("No microphone detected!")
 
-def recognize_speech(mic_index):
-    recognizer = sr.Recognizer()
-    with sr.Microphone(device_index=mic_index) as source:
-        print("[LISTENING] Waiting for speech...")
-        recognizer.adjust_for_ambient_noise(source, duration=0.5)
-        audio = recognizer.listen(source, phrase_time_limit=3)
-
+def speech_to_text(audio_data, samplerate):
+    """Transcribe short audio using Whisper."""
     try:
-        text = recognizer.recognize_google(audio).lower()
-        return text
-    except sr.UnknownValueError:
-        return None
-    except sr.RequestError:
-        return None
+        import tempfile, wave
+        temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        with wave.open(temp_wav.name, "wb") as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)
+            f.setframerate(samplerate)
+            f.writeframes((audio_data * 32767).astype(np.int16).tobytes())
 
-def respond_to_speech(text):
-    if text is None:
-        return
+        with open(temp_wav.name, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file
+            )
+        os.remove(temp_wav.name)
+        return transcript.text.strip()
+    except Exception as e:
+        print(f"[ERROR] Speech recognition failed: {e}")
+        return ""
 
-    print(f"You said: {text}")
-
-    # Trigger GPT only for greetings
-    if any(greet in text for greet in ["hello", "hi", "hey"]):
+def ask_gpt(prompt):
+    """Send prompt to GPT and return response."""
+    try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a polite assistant."},
-                {"role": "user", "content": "Say 'Yes, sir.'"}
+                {"role": "system", "content": "You are an assistant that responds briefly and politely."},
+                {"role": "user", "content": prompt}
             ]
         )
-        print("GPT:", response.choices[0].message.content)
-    else:
-        print("[INFO] No greeting detected.")
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[ERROR] GPT API failed: {e}")
+        return "[No response]"
 
 def main():
+    # Setup devices
     cam_index = get_default_camera_index()
     print(f"[INFO] Using camera index: {cam_index}")
     camera = CameraView(camera_index=cam_index)
 
     mic_device = get_default_mic_device()
     print(f"[INFO] Using microphone device: {mic_device}")
+    audio = AudioStream(device=mic_device, duration=3)
 
-    print("[INFO] Starting system. Press Ctrl+C to quit.")
-    recognizer = sr.Recognizer()
+    print("[INFO] System ready. Listening and observing...")
 
     try:
         while True:
+            # Capture frame for context/logging
             frame = camera.get_frame()
             if frame is not None:
                 print("[INFO] Frame captured.")
 
-            text = recognize_speech(mic_device)
-            respond_to_speech(text)
+            # Record audio
+            clip = audio.record_short_clip()
+            if clip is None or np.max(np.abs(clip)) < 0.01:
+                # Skip silence
+                continue
 
-            time.sleep(1)
+            print("[INFO] Audio clip recorded. Processing...")
+
+            text = speech_to_text(clip.flatten(), audio.samplerate)
+            if not text:
+                continue
+
+            print(f"You said: {text}")
+
+            # Simple greeting trigger
+            if any(word in text.lower() for word in ["hi", "hello", "hey", "greetings"]):
+                gpt_response = "Yes, sir."
+            else:
+                gpt_response = ask_gpt(text)
+
+            print(f"GPT: {gpt_response}")
+            time.sleep(0.5)
+
     except KeyboardInterrupt:
         print("[INFO] Exiting...")
     finally:
         camera.release()
+        audio.close()
 
 if __name__ == "__main__":
     main()
