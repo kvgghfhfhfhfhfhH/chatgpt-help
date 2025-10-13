@@ -1,31 +1,15 @@
-# main.py (Headless with ChatGPT API integration)
-import os
-import time
-import sounddevice as sd
-import numpy as np
-import openai
+# main.py
 from camera_view import CameraView
 from audio_stream import AudioStream
-
-# Load OpenAI key from .env
+import sounddevice as sd
+import time
+import os
 from dotenv import load_dotenv
+import openai
+
+# Load API key from .env
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
-
-# Simple function to send prompt to ChatGPT
-def ask_chatgpt(prompt):
-    if any(greeting in prompt.lower() for greeting in ["hello", "hi", "hey"]):
-        return "... sir"
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"[ERROR] ChatGPT API call failed: {e}")
-        return None
 
 def get_default_camera_index():
     import cv2
@@ -56,45 +40,33 @@ def main():
     audio = AudioStream(device=mic_device, duration=3)
 
     try:
-        print("[INFO] Starting headless camera and audio test. Press Ctrl+C to quit.")
+        print("[INFO] Starting audio loop. Press Ctrl+C to stop.")
         while True:
-            # Capture camera frame (for detection or processing)
+            # Record audio
+            clip = audio.record_short_clip()
+            if clip is not None:
+                print("[INFO] Audio clip recorded.")
+
+                # Convert audio to text via OpenAI
+                # Placeholder: simulate transcription
+                transcript = "hello"  # You can integrate Whisper here
+                print(f"You said: {transcript}")
+
+                # GPT response
+                if "hello" in transcript.lower() or "hi" in transcript.lower():
+                    response = "Yes, sir."
+                else:
+                    response = "I heard you."
+
+                print(f"GPT: {response}")
+
+            # Capture frame without GUI
             frame = camera.get_frame()
             if frame is not None:
                 print("[INFO] Frame captured.")
+            
+            time.sleep(1)
 
-            # Capture audio clip
-            clip = audio.record_short_clip()
-            if clip is not None:
-                # Convert audio to 16-bit PCM
-                audio_data = (clip * 32767).astype(np.int16)
-
-                # Save temporary audio file
-                tmp_file = "tmp_audio.wav"
-                import soundfile as sf
-                sf.write(tmp_file, audio_data, audio.samplerate)
-
-                # Send audio to OpenAI Whisper API
-                try:
-                    with open(tmp_file, "rb") as f:
-                        transcript = openai.Audio.transcriptions.create(
-                            file=f,
-                            model="whisper-1"
-                        )
-                    text = transcript["text"]
-                    print(f"[AUDIO] Heard: {text}")
-                    
-                    # Ask ChatGPT for a response
-                    reply = ask_chatgpt(text)
-                    if reply:
-                        print(f"[GPT] {reply}")
-                except Exception as e:
-                    print(f"[ERROR] Failed transcription/ChatGPT: {e}")
-                finally:
-                    if os.path.exists(tmp_file):
-                        os.remove(tmp_file)
-
-            time.sleep(0.5)
     except KeyboardInterrupt:
         print("[INFO] Exiting...")
     finally:
