@@ -3,19 +3,35 @@ import sounddevice as sd
 import numpy as np
 
 class AudioStream:
-    def __init__(self, device=None, duration=1, threshold=0.02):
+    def __init__(self, device=None, samplerate=16000, duration=3):
         self.device = device
+        self.samplerate = samplerate
         self.duration = duration
-        self.threshold = threshold
 
-    def detect_sound(self):
-        data = sd.rec(int(self.duration * 16000), samplerate=16000, channels=1, device=self.device)
-        sd.wait()
-        volume = np.abs(data).mean()
-        if volume > self.threshold:
-            print("[AUDIO] Sound detected!")
-        else:
-            print("[AUDIO] Silence")
+    def record_short_clip(self):
+        """Record a short audio clip from the microphone."""
+        try:
+            print("[DEBUG] Listening for sound...")
+            audio = sd.rec(
+                int(self.duration * self.samplerate),
+                samplerate=self.samplerate,
+                channels=1,
+                dtype="float32",
+                device=self.device,
+            )
+            sd.wait()
+
+            # Return audio only if non-silent
+            volume = np.max(np.abs(audio))
+            if volume < 0.01:
+                # Silence threshold
+                print("[DEBUG] Silence detected, skipping.")
+                return None
+            return audio
+        except Exception as e:
+            print(f"[ERROR] Audio recording failed: {e}")
+            return None
 
     def close(self):
+        """Nothing to close for now; for future expansion."""
         pass
