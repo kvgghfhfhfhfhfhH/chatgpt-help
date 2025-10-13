@@ -1,0 +1,7 @@
+opencv-python
+sounddevice
+numpy
+openai-whisper
+torch
+tiktoken
+requests
