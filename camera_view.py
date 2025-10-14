@@ -13,19 +13,16 @@ class CameraView:
             return None
         ret, frame = self.cap.read()
         if ret:
-            return frame
+            return cv2.flip(frame, 1)  # Mirror horizontally
         return None
+
+    def show_frame(self, frame):
+        cv2.imshow("Camera View", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            self.release()
+            exit()
 
     def release(self):
         if self.cap.isOpened():
             self.cap.release()
-
-def start_camera_view(camera_index=0):
-    camera = CameraView(camera_index)
-    if not camera.opened:
-        return
-
-    while True:
-        frame = camera.get_frame()
-        if frame is not None:
-            print("[INFO] Camera frame captured.")
+        cv2.destroyAllWindows()

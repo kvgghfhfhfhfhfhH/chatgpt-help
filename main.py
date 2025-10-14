@@ -1,109 +1,67 @@
 # main.py
 import os
 import time
-import cv2
-import numpy as np
-import sounddevice as sd
+import threading
 from dotenv import load_dotenv
 from camera_view import CameraView
 from audio_stream import AudioStream
 import openai
-import queue
-import threading
+import pyttsx3
 
-# Load OpenAI key from .env
+# Load API key
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# ----------------------------
-# Configuration
-# ----------------------------
-CAMERA_INDEX = 0          # USB webcam
-MIC_DEVICE = 1            # Replace with your mic device number (from `arecord -l`)
-SPEAKER_DEVICE = 2        # Replace with your speaker device number (from `aplay -l`)
-SAMPLERATE = 16000
-CLIP_DURATION = 1.0       # seconds
-THRESHOLD_VOLUME = 0.01   # Minimum volume to trigger recognition
+# Initialize TTS
+tts_engine = pyttsx3.init()
+tts_engine.setProperty('rate', 150)  # Speech speed
 
-# Queue to communicate audio between threads
-audio_queue = queue.Queue()
+def ask_gpt(prompt):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+        answer = response.choices[0].message.content.strip()
+        return answer
+    except Exception as e:
+        print(f"[ERROR] GPT request failed: {e}")
+        return "I am having trouble thinking right now."
 
-# ----------------------------
-# Helper functions
-# ----------------------------
-def detect_greeting(text: str):
-    greetings = ["hello", "hi", "hey", "greetings"]
-    for g in greetings:
-        if g in text.lower():
-            return True
-    return False
-
-def ask_gpt(prompt: str):
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "You are polite and call the user 'sir' for greetings."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.5
-    )
-    return response.choices[0].message.content.strip()
-
-# ----------------------------
-# Audio thread function
-# ----------------------------
-def audio_listener(audio_stream: AudioStream):
+def audio_listener(audio_stream):
     while True:
         clip = audio_stream.record_clip()
         if clip is not None:
-            # Check volume to avoid false triggers
-            volume = np.abs(clip).mean()
-            if volume > THRESHOLD_VOLUME:
-                audio_queue.put(clip)
-        time.sleep(0.1)
+            # Basic detection placeholder: convert audio to text using GPT
+            prompt = "The user said: [audio clip placeholder]"
+            gpt_response = ask_gpt(prompt)
+            if any(greet in gpt_response.lower() for greet in ["hello", "hi", "hey"]):
+                gpt_response = "Yes, sir."
+            print(f"You said: {gpt_response}")
+            tts_engine.say(gpt_response)
+            tts_engine.runAndWait()
 
-# ----------------------------
-# Main loop
-# ----------------------------
 def main():
-    print("[INFO] Using camera index:", CAMERA_INDEX)
-    print("[INFO] Using microphone device:", MIC_DEVICE)
-    print("[INFO] System ready. Listening and observing...")
+    print("[INFO] Detecting camera...")
+    camera_index = 0  # Default USB camera index
+    camera = CameraView(camera_index)
 
-    # Initialize camera (we won't show GUI to avoid XCB issues)
-    camera = CameraView(CAMERA_INDEX)
+    print("[INFO] Detecting microphone...")
+    audio = AudioStream(duration=3)  # Continuous listening
 
-    # Initialize audio
-    audio = AudioStream(input_device=MIC_DEVICE, output_device=SPEAKER_DEVICE,
-                        samplerate=SAMPLERATE, duration=CLIP_DURATION)
+    # Start audio thread
+    listener_thread = threading.Thread(target=audio_listener, args=(audio,), daemon=True)
+    listener_thread.start()
 
-    # Start audio listener thread
-    t = threading.Thread(target=audio_listener, args=(audio,), daemon=True)
-    t.start()
+    print("[INFO] System ready. Press 'q' in camera window to quit.")
 
     try:
         while True:
             frame = camera.get_frame()
             if frame is not None:
-                # Process frame if needed (e.g., object detection)
-                print("[INFO] Frame captured.")
-
-            # Process audio clips in queue
-            while not audio_queue.empty():
-                clip = audio_queue.get()
-                print("[INFO] Audio clip recorded.")
-                # Convert audio clip to text here if you have a STT model
-                # For demo, let's assume it always "hears" hello
-                recognized_text = "hello"
-                if detect_greeting(recognized_text):
-                    print("You said:", recognized_text)
-                    gpt_response = "Yes, sir."
-                    print("GPT:", gpt_response)
-                    # Optional: use sounddevice to speak GPT response
-                    # You could integrate pyttsx3 or gTTS for TTS here
-
-            time.sleep(0.1)
-
+                camera.show_frame(frame)  # Mirrored feed
+            time.sleep(1)  # Slow processing to mimic original
     except KeyboardInterrupt:
         print("[INFO] Exiting...")
     finally:
