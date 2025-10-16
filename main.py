@@ -1,121 +1,88 @@
 import cv2
+from flask import Flask, Response, render_template_string
+import threading
+import os
 import sounddevice as sd
 import numpy as np
-import queue
-import threading
-import openai
-import os
+import io
 from dotenv import load_dotenv
-import time
+from openai import OpenAI
 
-# Load OpenAI key from .env
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise ValueError("[ERROR] OpenAI API key not found in .env!")
-openai.api_key = OPENAI_API_KEY
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Audio settings
-SAMPLE_RATE = 16000
-CHANNELS = 1
-CLIP_DURATION = 3  # seconds
-AUDIO_QUEUE = queue.Queue()
+app = Flask(__name__)
 
-# Camera settings
-CAM_INDEX = 0
-FRAME_QUEUE = queue.Queue()
+# Simple HTML page
+PAGE = """
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Nova Interface</title>
+    <style>
+      body { background: #111; color: #eee; text-align: center; font-family: Arial; }
+      video { border-radius: 8px; border: 2px solid #00ff99; }
+      #log { width: 80%; margin: auto; text-align: left; background: #222; padding: 10px; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>👁️ Nova Interface</h1>
+    <video id="camera" autoplay playsinline width="640" height="480"></video>
+    <div id="log"></div>
+    <script>
+      const video = document.getElementById('camera');
+      video.src = "/video_feed";
+    </script>
+  </body>
+</html>
+"""
 
-# Gender detection placeholders
-def detect_gender(text):
-    text = text.lower()
-    if any(x in text for x in ["he", "him", "sir", "male"]):
-        return "male"
-    elif any(x in text for x in ["she", "her", "maam", "female"]):
-        return "female"
-    else:
-        return "unknown"
+# Flask routes
+@app.route('/')
+def index():
+    return render_template_string(PAGE)
 
-# Thread: capture audio continuously
-def audio_listener(device=None):
-    def callback(indata, frames, time_, status):
-        if status:
-            print(f"[ERROR] {status}")
-        AUDIO_QUEUE.put(indata.copy())
-
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, callback=callback, device=device):
-        while True:
-            sd.sleep(1000)
-
-# Thread: capture frames continuously
-def camera_listener():
-    cap = cv2.VideoCapture(CAM_INDEX)
-    if not cap.isOpened():
-        print(f"[ERROR] Cannot open camera at index {CAM_INDEX}")
-        return
+def gen_frames():
+    camera = cv2.VideoCapture(0)
     while True:
-        ret, frame = cap.read()
-        if ret:
-            FRAME_QUEUE.put(frame)
-        time.sleep(0.1)
+        success, frame = camera.read()
+        if not success:
+            break
+        else:
+            ret, buffer = cv2.imencode('.jpg', frame)
+            frame = buffer.tobytes()
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-# Process audio and respond with GPT
-def process_audio():
+@app.route('/video_feed')
+def video_feed():
+    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+def audio_listener():
+    print("[INFO] Nova is listening for voice input…")
     while True:
-        if AUDIO_QUEUE.empty():
-            time.sleep(0.1)
-            continue
-        clip = AUDIO_QUEUE.get()
-        # Convert audio to raw bytes for OpenAI transcription
-        audio_bytes = clip.tobytes()
+        duration = 5  # seconds
+        sr = 16000
+        audio = sd.rec(int(duration * sr), samplerate=sr, channels=1, dtype='float32')
+        sd.wait()
+        audio_bytes = io.BytesIO(np.int16(audio * 32767).tobytes())
         try:
-            # Use OpenAI transcription API (Whisper)
-            transcript = openai.audio.transcriptions.create(
-                file=openai.File.create(file=audio_bytes, filename="clip.wav"),
-                model="whisper-1"
+            transcript = client.audio.transcriptions.create(
+                model="gpt-4o-mini-transcribe",
+                file=("input.wav", audio_bytes, "audio/wav")
             )
-            text = transcript["text"]
-            if text.lower().startswith("hey nova"):
-                # Only trigger on "Hey Nova"
-                query = text[len("hey nova"):].strip()
-                gender = detect_gender(query)
-                print(f"You said: {query}")
-                print(f"Detected speaker gender: {gender}")
-
-                # GPT-4 response
-                response = openai.ChatCompletion.create(
+            text = transcript.text.strip().lower()
+            if text:
+                print(f"[USER]: {text}")
+                response = client.responses.create(
                     model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are Nova, helpful assistant."},
-                        {"role": "user", "content": query}
-                    ]
+                    input=f"The user said: '{text}'. Respond naturally as Nova."
                 )
-                answer = response.choices[0].message.content
-                print(f"Nova: {answer}")
-
-                # Show the latest frame when answering
-                if not FRAME_QUEUE.empty():
-                    frame = FRAME_QUEUE.get()
-                    cv2.imshow("Nova Camera View", frame)
-                    cv2.waitKey(1)
-
+                print(f"[NOVA]: {response.output_text}")
         except Exception as e:
-            print(f"[ERROR] Transcription failed: {e}")
+            print("[ERROR]", e)
 
-def main():
-    print("[INFO] Detecting camera and microphone...")
-    print("[INFO] System ready. Say 'Hey Nova' to interact.")
-
-    # Start threads
+# Run both web server and listener
+if __name__ == '__main__':
     threading.Thread(target=audio_listener, daemon=True).start()
-    threading.Thread(target=camera_listener, daemon=True).start()
-    threading.Thread(target=process_audio, daemon=True).start()
-
-    try:
-        while True:
-            time.sleep(1)  # Keep main thread alive
-    except KeyboardInterrupt:
-        print("[INFO] Exiting...")
-        cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    main()
+    app.run(host='0.0.0.0', port=8080, debug=False)
